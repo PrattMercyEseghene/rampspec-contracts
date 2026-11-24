@@ -304,6 +304,7 @@ mod tests {
         DataKey, FixtureMode, NONCE_TTL_TARGET, SEP_45_VERSION, WebAuthError, WebAuthFixture,
         WebAuthFixtureClient, nonce_hash,
     };
+    use proptest::prelude::*;
     use soroban_sdk::{
         Address, BytesN, Env, IntoVal, Map, String, Symbol,
         address_payload::AddressPayload,
@@ -369,6 +370,48 @@ mod tests {
             &(CURRENT_LEDGER + 1),
         );
         (env, contract_id, account, server)
+    }
+
+    #[test]
+    fn nonce_hash_separates_boundary_and_structured_corpus() {
+        let env = Env::default();
+        let nonce_corpus = [
+            String::from_str(&env, ""),
+            String::from_str(&env, "a"),
+            String::from_str(&env, "ab"),
+            String::from_str(&env, "prefix-a"),
+            String::from_str(&env, "prefix-b"),
+            String::from_str(&env, "nonce-ñ"),
+            String::from_str(&env, "nonce-東京"),
+            String::from_str(&env, &"x".repeat(128)),
+        ];
+
+        let mut derived = std::vec::Vec::new();
+        for nonce in &nonce_corpus {
+            derived.push(nonce_hash(&env, nonce));
+        }
+
+        for left in 0..derived.len() {
+            for right in (left + 1)..derived.len() {
+                assert_ne!(derived[left], derived[right]);
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 32, ..ProptestConfig::default() })]
+
+        #[test]
+        fn distinct_nonce_hashes_remain_separated(
+            left in "[^\\n]{0,128}",
+            right in "[^\\n]{0,128}",
+        ) {
+            prop_assume!(left != right);
+            let env = Env::default();
+            let left_nonce = String::from_str(&env, &left);
+            let right_nonce = String::from_str(&env, &right);
+            prop_assert_ne!(nonce_hash(&env, &left_nonce), nonce_hash(&env, &right_nonce));
+        }
     }
 
     #[test]
