@@ -96,6 +96,29 @@ fn validate_text(value: &String, max_length: u32) -> Result<(), WebAuthError> {
     if value.is_empty() || value.len() > max_length {
         return Err(WebAuthError::MalformedArgument);
     }
+
+    let bytes = value.to_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes.get_unchecked(i);
+        if byte < 0x20 || byte == 0x7f {
+            return Err(WebAuthError::MalformedArgument);
+        }
+        if byte == 0xc2 && i + 1 < bytes.len() {
+            let next = bytes.get_unchecked(i + 1);
+            if (0x80..=0x9f).contains(&next) {
+                return Err(WebAuthError::MalformedArgument);
+            }
+        }
+        if i + 2 < bytes.len()
+            && byte == 0xe2
+            && bytes.get_unchecked(i + 1) == 0x80
+            && matches!(bytes.get_unchecked(i + 2), 0xa8 | 0xa9)
+        {
+            return Err(WebAuthError::MalformedArgument);
+        }
+        i += 1;
+    }
     Ok(())
 }
 
@@ -570,6 +593,49 @@ mod tests {
         assert_eq!(
             client.try_web_auth_verify(&values),
             Err(Ok(WebAuthError::Expired))
+        );
+    }
+
+    #[test]
+    fn control_characters_are_rejected_for_every_text_argument() {
+        let (env, contract_id, account, server) = setup(FixtureMode::Accept);
+        let client = WebAuthFixtureClient::new(&env, &contract_id);
+        let client_domain = account_address(&env, 2);
+
+        for (field, value) in [
+            ("home_domain", "anchor.example\u{0000}"),
+            ("web_auth_domain", "auth.example\n"),
+            ("nonce", "nonce\r"),
+            ("client_domain", "wallet.example\u{007f}"),
+        ] {
+            let mut values = args(&env, &account, &server, Some(&client_domain), "safe-nonce");
+            values.set(Symbol::new(&env, field), String::from_str(&env, value));
+            assert_eq!(
+                client.try_web_auth_verify(&values),
+                Err(Ok(WebAuthError::MalformedArgument))
+            );
+            assert!(!client.is_nonce_consumed(&String::from_str(&env, "safe-nonce")));
+        }
+
+        assert_eq!(
+            client.try_reset_nonce(&String::from_str(&env, "reset\u{0000}nonce")),
+            Err(Ok(WebAuthError::MalformedArgument))
+        );
+        assert_eq!(env.events().all().events().len(), 0);
+    }
+
+    #[test]
+    fn text_length_boundaries_remain_exact() {
+        let env = Env::default();
+        assert!(super::validate_text(&String::from_str(&env, &"a".repeat(253)), 253).is_ok());
+        assert_eq!(
+            super::validate_text(&String::from_str(&env, &"a".repeat(254)), 253),
+            Err(WebAuthError::MalformedArgument)
+        );
+        assert!(super::validate_text(&String::from_str(&env, &"n".repeat(128)), 128).is_ok());
+        assert_eq!(
+            super::validate_text(&String::from_str(&env, &"n".repeat(129)), 128),
+            Err(WebAuthError::MalformedArgument)
         );
     }
 
